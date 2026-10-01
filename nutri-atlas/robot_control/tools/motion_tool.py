@@ -9,6 +9,7 @@ on the robot side. They block until the motion completes or times out.
 """
 import json
 import os
+import time
 
 import json5
 from qwen_agent.tools.base import BaseTool, register_tool
@@ -45,7 +46,9 @@ class SpinRobot(BaseTool):
         args = json5.loads(params)
         angle_deg = float(args['angle_deg'])
         print(f'[spin_robot] rotating {angle_deg:.1f}°')
+        t0 = time.time()
         result = _client.send_command('spin', angle_deg=angle_deg)
+        print(f"[spin_robot] {result.get('status')} in {time.time() - t0:.1f}s: {result.get('message')}")
         return json.dumps(result)
 
 

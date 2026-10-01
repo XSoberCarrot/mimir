@@ -192,11 +192,11 @@ TOOL_DEFINITIONS = [
             'name': 'navigate_and_scan',
             'description': (
                 'Navigate to a destination WHILE running YOLO detection along the way. '
-                'USE THIS (not navigate_to_landmark) whenever the user combines navigation '
-                'with any observation intent, e.g. "go to X and look for objects", '
-                '"navigate to X and detect", "on the way / along the way / in your way '
-                'find/look for/scan/detect/remember anything", "as you move observe", '
-                '"go to X and see what\'s there". '
+                'Use ONLY when the user explicitly asks to observe DURING the trip, e.g. '
+                '"on the way / along the way / along the route / while moving / as you go '
+                'find/look for/scan/detect/remember anything". '
+                'Do NOT use for "go to X and see/check/look" or "go to X and see if anyone '
+                'is there" — for those, call navigate_to_landmark, then scan_objects at the destination. '
                 'Detections are stored in temp memory with map-frame positions. After arrival, '
                 'call register_objects to persist them.'
             ),
@@ -219,6 +219,13 @@ TOOL_DEFINITIONS = [
                         'type': 'string',
                         'description': 'Comma-separated labels to detect (e.g. "bottle,cup"). Empty = detect all.',
                     },
+                    'yaw_deg': {
+                        'type': 'number',
+                        'description': (
+                            'Optional final heading in degrees. Omit to use the landmark\'s stored '
+                            'yaw (if any) or identity.'
+                        ),
+                    },
                 },
             },
         },
@@ -229,9 +236,10 @@ TOOL_DEFINITIONS = [
             'name': 'navigate_to_landmark',
             'description': (
                 'Navigate the robot to a position in the map — PURE navigation, no observation. '
-                'DO NOT use this tool if the user mentions looking, scanning, detecting, checking, '
-                'observing, or remembering objects during the trip — use navigate_and_scan instead. '
-                'Use this tool ONLY when the user just wants to travel to a place. '
+                'This is the default for any travel request. If the user also wants to look/check/find '
+                'something AT the destination, call this first, then scan_objects after arrival. '
+                'Only use navigate_and_scan instead when the user explicitly asks to scan DURING the trip '
+                '("on the way", "along the route", "while moving"). '
                 'Two inputs: (1) landmark_name (looked up via list_landmarks); '
                 '(2) x, y coordinates directly (for a previously detected object — '
                 'call get_detected_objects first to find (px, py)).'
@@ -250,6 +258,14 @@ TOOL_DEFINITIONS = [
                     'y': {
                         'type': 'number',
                         'description': 'Map y coordinate to navigate to. Use when navigating to a detected object position.',
+                    },
+                    'yaw_deg': {
+                        'type': 'number',
+                        'description': (
+                            'Optional final heading in degrees (0=+x map axis, 90=+y, -90=-y). '
+                            'Omit to use the landmark\'s stored yaw (if any) or identity. Use when '
+                            'the destination needs a specific orientation (e.g. to face a counter).'
+                        ),
                     },
                 },
             },
@@ -273,7 +289,10 @@ SYSTEM_MSG = {
         '     "along the route", "while moving", "as you go", "during the trip".)\n'
         '  Travel + save objects at destination            → navigate_to_landmark, then register_objects\n'
         '  Travel + EXPLICIT save during trip              → navigate_and_scan, then register_objects\n'
-        '  Observe in all directions without moving away   → spin_robot + scan_objects (×4)\n\n'
+        '  Observe in all directions without moving away   → spin_robot + scan_objects (×4)\n'
+        '    (ONLY when the user explicitly says "look around", "all directions", "360".)\n'
+        '  "Check X" / "is anyone there?" / "is there a cup?" → ONE scan_objects, NO rotation.\n'
+        '    Answer from that single scan, and say it only covers the direction the robot is facing.\n\n'
         'Examples (follow these patterns exactly):\n'
         '  "Go to the kitchen"\n'
         '      → navigate_to_landmark(landmark_name="kitchen")\n'
@@ -283,6 +302,9 @@ SYSTEM_MSG = {
         '  "Check the kitchen for ingredients"  /  "Find chicken and rice in the kitchen"\n'
         '      → navigate_to_landmark(landmark_name="kitchen")\n'
         '      → scan_objects(targets="chicken,rice")\n'
+        '  "Go to the reception to see if anybody is there"\n'
+        '      → navigate_to_landmark(landmark_name="reception")\n'
+        '      → scan_objects(targets="person")   (one scan only, do NOT spin)\n'
         '  "What do you see?" / "Inspect this area"\n'
         '      → scan_objects\n'
         '  "Go to reception and look for objects ON THE WAY"   ← explicit in-transit phrase\n'
@@ -302,7 +324,7 @@ SYSTEM_MSG = {
         '- scan_objects: YOLO on the current camera frame → TEMP MEMORY only. Non-destructive.\n'
         '- register_objects: persist detections as landmarks. Auto-drains temp memory from navigate_and_scan (map-frame); else runs a fresh 1-frame scan at the current pose.\n'
         '- navigate_and_scan: travel + detect along the way. Use ONLY when the user explicitly asks to scan DURING the trip ("on the way", "along the route", "while moving"). Otherwise use navigate_to_landmark then scan_objects.\n'
-        '- navigate_to_landmark: PURE travel, no observation (see decision table).\n'
+        '- navigate_to_landmark: PURE travel, no observation (see decision table). Accepts an optional yaw_deg (final heading in degrees, 0=+x, 90=+y, -90=-y). If omitted, uses the landmark\'s stored yaw if any, else identity.\n'
         '- spin_robot: rotate in place (degrees, +CCW / -CW).\n'
         '- forget_object: remove a stale detected object from the persistent map by frame name.\n'
         '- get_meal_recommendation: recommend food based on nutritional gap from what the user has eaten.\n\n'

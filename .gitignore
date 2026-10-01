@@ -31,3 +31,9 @@ EmbodiedBench_atlasmodified/
 stage/
 results/
 figures/
+
+jetson_deployment/updated_scripts
+
+mimir/Uttej_jbhi_2026_nutri_assistant_agent/
+
+nutri_rag/user_preferences.duckdb.wal

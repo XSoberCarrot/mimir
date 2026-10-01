@@ -24,9 +24,14 @@ class ZMQNavClient:
         self._timeout_ms = timeout_ms
         self._ctx = zmq.Context()
 
-    def send_goal(self, x: float, y: float, landmark: str = '') -> dict:
+    def send_goal(self, x: float, y: float, landmark: str = '',
+                  yaw_deg: float | None = None) -> dict:
         """
         Send a navigation goal and block until the robot replies.
+
+        Args:
+            yaw_deg: optional final heading in degrees (0=+x, 90=+y, -90=-y).
+                     If None, the bridge sends identity orientation.
 
         Returns a dict with keys:
             goal_id  : str
@@ -40,6 +45,8 @@ class ZMQNavClient:
             'x': x,
             'y': y,
         }
+        if yaw_deg is not None:
+            payload['yaw_deg'] = float(yaw_deg)
 
         # Create a fresh REQ socket per call (safe for single-threaded agent).
         sock = self._ctx.socket(zmq.REQ)

@@ -69,7 +69,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed-start", type=int, default=1,  help="First seed (inclusive)")
-    parser.add_argument("--seed-end",   type=int, default=50, help="Last seed (inclusive)")
+    parser.add_argument("--seed-end",   type=int, default=100, help="Last seed (inclusive)")
     args = parser.parse_args()
     seed_range = range(args.seed_start, args.seed_end + 1)
 

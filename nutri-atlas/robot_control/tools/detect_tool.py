@@ -11,6 +11,7 @@ Heavy resources (YOLO model, ZMQ image subscribers, background frame threads) ar
 initialised lazily on the first call and reused for all subsequent calls.
 """
 import json
+import math
 import os
 import threading
 import time
@@ -451,15 +452,18 @@ class _Scanner:
     # ------------------------------------------------------------------
     def navigate_and_scan(self, x: float, y: float, landmark: str = '',
                           targets: set | None = None,
-                          scan_interval: float = 2.0) -> dict:
+                          scan_interval: float = 2.0,
+                          yaw_deg: float | None = None) -> dict:
         """
         Start async navigation to (x, y) and run periodic YOLO scans while moving.
         Detections are transformed to map frame using get_camera_pose and accumulated
         in temp_objects. Returns nav result + detection summary.
         """
         # 1. Start async navigation
-        start_reply = self.zmq_client.send_command(
-            'start_navigate', x=x, y=y, landmark=landmark)
+        send_kwargs = {'x': x, 'y': y, 'landmark': landmark}
+        if yaw_deg is not None:
+            send_kwargs['yaw_deg'] = float(yaw_deg)
+        start_reply = self.zmq_client.send_command('start_navigate', **send_kwargs)
         if start_reply.get('status') != 'started':
             return {'status': 'failed',
                     'message': start_reply.get('message', 'Failed to start navigation')}
@@ -770,6 +774,15 @@ class NavigateAndScan(BaseTool):
             'description': 'Comma-separated labels to detect (e.g. "bottle,cup"). Empty = detect all.',
             'required': False,
         },
+        {
+            'name': 'yaw_deg',
+            'type': 'number',
+            'description': (
+                'Optional final heading in degrees (0 = +x map axis, 90 = +y, -90 = -y). '
+                'If omitted: uses landmark\'s stored yaw if any, otherwise identity.'
+            ),
+            'required': False,
+        },
     ]
 
     def call(self, params: str, **kwargs) -> str:
@@ -777,6 +790,7 @@ class NavigateAndScan(BaseTool):
         landmark_name = args.get('landmark_name', '').strip().lower() if args.get('landmark_name') else ''
         targets_str = args.get('targets', '').strip()
         targets = {t.strip() for t in targets_str.split(',') if t.strip()} if targets_str else None
+        landmark_yaw_deg: float | None = None
 
         scanner = _get_scanner()
 
@@ -785,6 +799,8 @@ class NavigateAndScan(BaseTool):
             try:
                 pos = _landmark_loader.get(landmark_name)
                 x, y = pos['x'], pos['y']
+                if 'yaw_rad' in pos:
+                    landmark_yaw_deg = math.degrees(float(pos['yaw_rad']))
             except KeyError:
                 # In real-world mode, also check bridge-stored detected objects
                 if _DETECTION_MODE == 'real':
@@ -806,7 +822,13 @@ class NavigateAndScan(BaseTool):
             return json.dumps({'status': 'failed',
                                'message': 'Provide either landmark_name or both x and y.'})
 
-        print(f'[navigate_and_scan] → {landmark_name or f"({x:.2f}, {y:.2f})"}  targets={targets or "all"}')
+        # LLM-supplied yaw_deg overrides landmark's stored yaw if any.
+        yaw_deg = args.get('yaw_deg')
+        if yaw_deg is None:
+            yaw_deg = landmark_yaw_deg
+
+        print(f'[navigate_and_scan] → {landmark_name or f"({x:.2f}, {y:.2f})"}  '
+              f'targets={targets or "all"}  yaw_deg={yaw_deg}')
         result = scanner.navigate_and_scan(x=x, y=y, landmark=landmark_name,
-                                           targets=targets)
+                                           targets=targets, yaw_deg=yaw_deg)
         return json.dumps(result, ensure_ascii=False)

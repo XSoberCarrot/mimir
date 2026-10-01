@@ -6,6 +6,7 @@ Registers two tools:
   - list_landmarks       : list all known landmark names and positions
 """
 import json
+import math
 import os
 
 import json5
@@ -55,16 +56,30 @@ class NavigateToLandmark(BaseTool):
             'description': 'Map y coordinate to navigate to. Use when navigating to a detected object position.',
             'required': False,
         },
+        {
+            'name': 'yaw_deg',
+            'type': 'number',
+            'description': (
+                'Optional final heading in degrees (0 = +x map axis, 90 = +y, -90 = -y). '
+                'If omitted: uses the landmark\'s stored yaw if any, otherwise identity (+x). '
+                'Use this when you need the robot to face a specific direction at the destination '
+                '(e.g. to scan a specific counter, look out a window).'
+            ),
+            'required': False,
+        },
     ]
 
     def call(self, params: str, **kwargs) -> str:
         args = json5.loads(params)
         landmark_name = args.get('landmark_name', '').strip().lower() if args.get('landmark_name') else ''
+        landmark_yaw_deg: float | None = None
 
         if landmark_name:
             try:
                 pos = _loader.get(landmark_name)
                 x, y = pos['x'], pos['y']
+                if 'yaw_rad' in pos:
+                    landmark_yaw_deg = math.degrees(float(pos['yaw_rad']))
             except KeyError:
                 # In real world, also check bridge-stored detected objects
                 if _DETECTION_MODE == 'real':
@@ -85,8 +100,15 @@ class NavigateToLandmark(BaseTool):
         else:
             return json.dumps({'status': 'failed', 'message': 'Provide either landmark_name or both x and y.'})
 
-        print(f"[navigate_to_landmark] navigating to: {landmark_name or f'({x}, {y})'}")
-        result = _client.send_goal(x=x, y=y, landmark=landmark_name)
+        # LLM-supplied yaw_deg overrides landmark's stored yaw if any.
+        yaw_deg = args.get('yaw_deg')
+        if yaw_deg is None:
+            yaw_deg = landmark_yaw_deg
+
+        print(f"[navigate_to_landmark] navigating to: {landmark_name or f'({x}, {y})'} "
+              f"yaw_deg={yaw_deg}")
+        result = _client.send_goal(x=x, y=y, landmark=landmark_name, yaw_deg=yaw_deg)
+        print(f"[navigate_to_landmark] {result.get('status')}: {result.get('message')}")
         return json.dumps(result)
 
 

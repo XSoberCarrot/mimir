@@ -1,7 +1,21 @@
+# Each landmark has x, y in the map frame, an optional description, and
+# an OPTIONAL yaw_rad field (in radians; matches the output of
+# coordinates_record.py). When yaw_rad is set, navigate_to_landmark and
+# navigate_and_scan default the final robot heading to that yaw, so the
+# robot arrives facing the recorded direction. The LLM may still override
+# per-call by passing yaw_deg explicitly.
+#
+# Example:
+#   Kitchen:
+#     x: -15.07
+#     y: 10.48
+#     yaw_rad: 1.5708        # face +y at the kitchen
+#     description: "Kitchen area"
 landmarks:
   Start Point:
     x: 1.17
     y: 2.98
+    yaw_rad: 1.6502
     description: "Start point"
 
   Playground:
@@ -22,11 +36,13 @@ landmarks:
   Reception:
     x: -10.7
     y: 1.8
+    yaw_rad: -1.8242
     description: "Reception place, where the front door located"
 
   Kitchen:
-    x: -15.07
-    y: 10.48
+    x: -16.0
+    y: 10.76
+    yaw_rad: -0.75
     description: "Kitchen area, where may have some foods and drinks"
   
   Meeting Room:

@@ -328,6 +328,34 @@ The unifying principle: **always compute both `q_text` and `q_gat`**, even when 
 | 4 Meal layer | `MEAL_COMPOSE_MODE` | `off` | `on` (Phase D + E) |
 | Pantry availability | `AVAILABILITY_SOURCE` | `none` | `json`, `zmq` |
 
+## Evaluation
+
+How to reproduce every benchmark. Activate the env first (`conda activate atlas`, or prefix commands with `/home/boxun/miniconda3/envs/atlas/bin/python3`); commands assume the repo root `~/work/atlas/mimir`. Benchmarks marked **server** need the LLM server running — start it in a separate terminal and leave it up:
+
+```bash
+bash nutri_rag/scripts/start_server.sh        # llama-server, Qwen3.5-9B, port 8080
+```
+
+| Benchmark | Paper artifact | Server? | Command |
+|---|---|---|---|
+| HealthyFoodSubs substitution (Stage 3) | Table I | no | `python nutri_graph/scripts/eval_food_subs.py` |
+| PFoodReQ recipe recommendation (Stage 4) | Table II | no | `python nutri_rag/scripts/run_pfoodreq_bench.py` |
+| NutriBench v2 nutrient estimation (Stage 1) | Table IV | yes | `python nutri_rag/scripts/run_bench.py --nutrient carb --mode v2` |
+| NutriBench — all nutrients × modes | Table IV | yes | `python nutri_rag/scripts/run_all_bench.py --modes baseline v1 v2` |
+| NutriBench — quantization sweep (UD-IQ2_M, Q4_K_S, …) | Table IV / Pareto | yes | `python nutri_rag/scripts/run_model_sweep.py` |
+| Patient clinical case study | Table III | yes | `python nutri_rag/scripts/eval_patient_recommendations.py --out patient_eval.csv` |
+| EmbodiedBench EB-ALFRED (skill selection) | Fig. (EB-ALFRED) | own harness | `cd EmbodiedBench_atlasmodified && python -m embodiedbench.main` |
+| Real-world embodied nutrition test | Table V | yes + robot | manual — see [nutri-atlas/TASKS_V2.md](nutri-atlas/TASKS_V2.md) |
+
+Notes:
+- **No server needed** for `eval_food_subs.py` and `run_pfoodreq_bench.py` (default `--ablation no_llm`); everything else talks to `start_server.sh` on port 8080.
+- Append `--limit 100` (or `--limit 20`) to the NutriBench / PFoodReQ runs for a fast smoke pass before a full run.
+- **Patient case study** measures each recommended meal against published references: Low-Carb = carbohydrate < 26 %E ([Feinman et al. 2015](https://doi.org/10.1016/j.nut.2014.06.011)); Balanced = carbohydrate 45–65 %E (IOM 2005 AMDR); allergen-free verified from ingredient names (FALCPA major allergens). Sodium/sugar are not claimed — neither the recipe corpus nor the patient records store them.
+- **EmbodiedBench** is a vendored harness with its own environment (`EmbodiedBench_atlasmodified/install.sh`); see its `README.md` for the EB-ALFRED config and backbone flags (IQ2_M / Q4_K_S).
+- **Real-world test** is graded manually over the 9 prompts in `TASKS_V2.md` (3 levels × 3 prompts) after the robot pre-flight (bringup + ZMQ bridge + LLM server + `robot_assistant.py`).
+
+Suggested smoke order (fast → slow): `eval_food_subs.py` → `run_pfoodreq_bench.py --limit 100` → start server → `eval_patient_recommendations.py` → `run_bench.py --limit 100` → full sweeps → EmbodiedBench → robot.
+
 ## Results
 
 ### NutriBench (Protein, 1000 samples)

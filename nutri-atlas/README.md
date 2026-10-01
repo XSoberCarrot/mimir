@@ -113,7 +113,7 @@ ros2 launch realsense_zmq bringup_with_zmq.launch.py
 # Terminal 2 — ZMQ navigation bridge (port 5555)
 cd nutri-atlas/robot_control/robot_side/zmq_bridge_real
 python zmq_bridge_node_working_v2.py
-# Optional: --port 5555 --spin-kp 1.5 --move-kp 0.8 --spin-threshold-deg 3.0 --move-threshold-m 0.05
+# Optional: --port 5555 --spin-kp 1.5 --move-kp 0.8 --spin-threshold-deg 10.0 --move-threshold-m 0.05
 
 # (Optional) Record landmark coordinates
 cd nutri-atlas/robot_control/robot_side

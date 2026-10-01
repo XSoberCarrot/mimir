@@ -12,7 +12,7 @@
 #   qwen_test/start_server.sh  (identical config but parallel=3)
 set -e
 
-MODEL_PATH="${1:-/home/boxun/work/atlas/unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-UD-Q4_K_XL.gguf}"
+MODEL_PATH="${1:-/home/boxun/work/atlas/unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-UD-IQ2_M.gguf}"
 MMPROJ_PATH="/home/boxun/work/atlas/unsloth/Qwen3.5-9B-GGUF/mmproj-BF16.gguf"
 PORT=8080
 

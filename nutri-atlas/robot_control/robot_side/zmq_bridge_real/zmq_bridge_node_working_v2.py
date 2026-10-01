@@ -49,11 +49,13 @@ Message types handled:
 Usage:
     python zmq_bridge_node.py [--port 5555]
                               [--spin-kp 1.5] [--move-kp 0.8]
-                              [--spin-threshold-deg 3.0] [--move-threshold-m 0.05]
+                              [--spin-threshold-deg 10.0] [--move-threshold-m 0.05]
 
 Environment variables:
     ZMQ_PORT   default 5555
 """
+from __future__ import annotations
+
 import argparse
 import json
 import math
@@ -108,10 +110,16 @@ _NAV_TIMEOUT = 120.0   # seconds
 # not Nav2's BT result. Nav2 in this stack is unreliable (BT SIGSEGVs, false
 # successes from stale localization, aborts while the controller tail keeps
 # the robot moving). Polling TF survives all three.
-_ARRIVAL_THRESHOLD_M = 0.5     # success when within this distance
+_ARRIVAL_THRESHOLD_M = 1.0     # success when within this distance
 _NAV_POLL_S          = 0.3     # TF poll period during navigation
-_NAV_STALL_S         = 15.0    # max seconds with no measurable progress
+_NAV_STALL_S         = 30.0    # max seconds with no measurable progress (> Nav2 progress checker's 20 s)
 _NAV_STALL_PROG_M    = 0.05    # min distance closed to count as progress
+
+# Final yaw alignment after XY arrival — done by us, not Nav2 (Nav2 in this
+# stack often gets cancelled before its end-of-route alignment runs).
+# Tolerance is intentionally lenient — close enough for "facing the counter".
+_NAV_YAW_TOLERANCE_DEG = 10.0  # acceptable yaw alignment error at arrival
+_NAV_YAW_TIMEOUT_S     = 10.0  # max time to spend on yaw alignment
 
 # cmd_vel publish rate during spin/move
 _CTRL_HZ = 20.0
@@ -121,6 +129,18 @@ _SECTOR_NAMES = ['front', 'front_left', 'left', 'back_left',
                  'back', 'back_right', 'right', 'front_right']
 _SCAN_MIN_RANGE = 0.15   # metres — ignore points closer than this (robot body)
 _SCAN_MAX_RANGE = 10.0   # metres — clip at this distance
+
+
+def _yaw_deg_to_quat_zw(yaw_deg: float | None) -> tuple[float, float]:
+    """Convert yaw in degrees to (qz, qw) for a ground-plane rotation.
+
+    Returns the identity quaternion (qz=0, qw=1) when yaw_deg is None.
+    qx and qy are always 0 for a yaw-only rotation in the map frame.
+    """
+    if yaw_deg is None:
+        return 0.0, 1.0
+    half = math.radians(float(yaw_deg)) / 2.0
+    return math.sin(half), math.cos(half)
 
 
 def _quat_to_rotation_matrix(qx: float, qy: float, qz: float, qw: float) -> list:
@@ -184,6 +204,7 @@ class ZMQBridgeNode(Node):
         self._nav_t_start       = 0.0
         self._nav_last_dist     = float('inf')
         self._nav_last_prog_t   = 0.0
+        self._nav_yaw_deg       = None   # if set, align on arrival (async path)
         self._nav_lock          = threading.Lock()
 
         # --- ZMQ REP socket ---
@@ -259,9 +280,12 @@ class ZMQBridgeNode(Node):
 
         elif command_type == 'start_navigate':
             gx, gy = float(msg.get('x', 0)), float(msg.get('y', 0))
+            yaw_deg = msg.get('yaw_deg')
             self.get_logger().info(
-                f'[{goal_id[:8]}] start_navigate landmark={msg.get("landmark")} x={gx:.2f} y={gy:.2f}')
-            return self._handle_start_navigate(goal_id, gx, gy, msg.get('landmark', ''))
+                f'[{goal_id[:8]}] start_navigate landmark={msg.get("landmark")} '
+                f'x={gx:.2f} y={gy:.2f} yaw_deg={yaw_deg}')
+            return self._handle_start_navigate(goal_id, gx, gy, msg.get('landmark', ''),
+                                                yaw_deg=yaw_deg)
 
         elif command_type == 'check_nav_status':
             return self._handle_check_nav_status(goal_id)
@@ -286,10 +310,13 @@ class ZMQBridgeNode(Node):
 
         elif 'x' in msg and 'y' in msg:
             gx, gy = float(msg['x']), float(msg['y'])
+            yaw_deg = msg.get('yaw_deg')
             self.get_logger().info(
-                f'[{goal_id[:8]}] navigate landmark={msg.get("landmark")} x={gx:.2f} y={gy:.2f}'
+                f'[{goal_id[:8]}] navigate landmark={msg.get("landmark")} '
+                f'x={gx:.2f} y={gy:.2f} yaw_deg={yaw_deg}'
             )
-            return self._handle_navigate(goal_id, gx, gy, msg.get('landmark', ''))
+            return self._handle_navigate(goal_id, gx, gy, msg.get('landmark', ''),
+                                          yaw_deg=yaw_deg)
 
         else:
             return {
@@ -319,12 +346,57 @@ class ZMQBridgeNode(Node):
         except Exception:
             pass
 
+    def _align_yaw_in_place(self, target_yaw_rad: float) -> tuple[bool, float]:
+        """Spin in place to align with target_yaw_rad (map frame).
+
+        Used after XY arrival to give the robot a deterministic final heading
+        independent of Nav2's end-of-route behavior. Same P-controller pattern
+        as _handle_spin, but using ABSOLUTE target yaw (not relative angle) and
+        the lenient _NAV_YAW_TOLERANCE_DEG.
+
+        Returns (aligned, final_err_deg). aligned=False on timeout or if TF
+        becomes unavailable; final_err_deg is signed error at exit.
+        """
+        tol_rad = math.radians(_NAV_YAW_TOLERANCE_DEG)
+        deadline = time.time() + _NAV_YAW_TIMEOUT_S
+        dt = 1.0 / _CTRL_HZ
+
+        final_err = float('inf')
+        try:
+            while time.time() < deadline:
+                pose = self._get_pose_full()
+                if pose is None:
+                    time.sleep(dt)
+                    continue
+                _, _, _, current_yaw = pose
+                err = math.atan2(
+                    math.sin(target_yaw_rad - current_yaw),
+                    math.cos(target_yaw_rad - current_yaw),
+                )
+                final_err = err
+                if abs(err) < tol_rad:
+                    return True, math.degrees(err)
+                vyaw = self._spin_kp * err
+                if vyaw > 0:
+                    vyaw = max(_MIN_VYAW, min(_MAX_VYAW, vyaw))
+                else:
+                    vyaw = max(-_MAX_VYAW, min(-_MIN_VYAW, vyaw))
+                self._publish_cmd_vel(linear_x=0.0, angular_z=vyaw)
+                time.sleep(dt)
+        finally:
+            self._publish_cmd_vel(linear_x=0.0, angular_z=0.0)
+
+        return False, math.degrees(final_err) if math.isfinite(final_err) else float('inf')
+
     def _poll_until_arrived(self, goal_handle, x: float, y: float,
-                            target: str, goal_id: str) -> dict:
+                            target: str, goal_id: str,
+                            yaw_deg: float | None = None) -> dict:
         """Poll TF until the robot reaches (x, y) or stalls.
 
         Outcomes:
-          success — robot pose within _ARRIVAL_THRESHOLD_M of (x, y)
+          success — robot pose within _ARRIVAL_THRESHOLD_M of (x, y).
+                    If yaw_deg is given, also spins in place to align before
+                    declaring success (best-effort, lenient tolerance).
           failed  — no measurable progress for _NAV_STALL_S
         """
         last_prog_t = time.time()
@@ -339,10 +411,21 @@ class ZMQBridgeNode(Node):
             dist = math.hypot(pose[0] - x, pose[1] - y)
             if dist <= _ARRIVAL_THRESHOLD_M:
                 self._cancel_goal_safely(goal_handle)
+                yaw_msg = ''
+                if yaw_deg is not None:
+                    aligned, err_deg = self._align_yaw_in_place(
+                        math.radians(float(yaw_deg))
+                    )
+                    if aligned:
+                        yaw_msg = f', yaw aligned ({err_deg:+.1f}° err)'
+                    else:
+                        yaw_msg = (f', yaw partial ({err_deg:+.1f}° err after '
+                                   f'{_NAV_YAW_TIMEOUT_S:.0f}s)')
                 return {
                     'goal_id': goal_id,
                     'status': 'success',
-                    'message': f'Arrived at {target} (x={x:.2f}, y={y:.2f}, dist={dist:.2f} m)',
+                    'message': (f'Arrived at {target} (x={x:.2f}, y={y:.2f}, '
+                                f'dist={dist:.2f} m){yaw_msg}'),
                 }
             if (last_dist - dist) >= _NAV_STALL_PROG_M:
                 last_prog_t = time.time()
@@ -364,7 +447,8 @@ class ZMQBridgeNode(Node):
             'message': f'Navigation to {target} interrupted by ROS shutdown',
         }
 
-    def _handle_navigate(self, goal_id: str, x: float, y: float, landmark: str) -> dict:
+    def _handle_navigate(self, goal_id: str, x: float, y: float, landmark: str,
+                         yaw_deg: float | None = None) -> dict:
         target = landmark if landmark else f'({x:.2f}, {y:.2f})'
         if not self._nav_client.wait_for_server(timeout_sec=2.0):
             return {
@@ -373,6 +457,7 @@ class ZMQBridgeNode(Node):
                 'message': 'Nav2 action server /navigate_to_pose is not available',
             }
 
+        qz, qw = _yaw_deg_to_quat_zw(yaw_deg)
         goal = NavigateToPose.Goal()
         goal.pose.header.stamp = self.get_clock().now().to_msg()
         goal.pose.header.frame_id = _MAP_FRAME
@@ -381,8 +466,8 @@ class ZMQBridgeNode(Node):
         goal.pose.pose.position.z = 0.0
         goal.pose.pose.orientation.x = 0.0
         goal.pose.pose.orientation.y = 0.0
-        goal.pose.pose.orientation.z = 0.0
-        goal.pose.pose.orientation.w = 1.0
+        goal.pose.pose.orientation.z = qz
+        goal.pose.pose.orientation.w = qw
 
         send_future = self._nav_client.send_goal_async(goal)
         goal_handle, err = self._wait_future(send_future, _NAV_TIMEOUT)
@@ -404,8 +489,10 @@ class ZMQBridgeNode(Node):
         # Nav2 here is unreliable: SIGSEGVs, false successes from stale
         # localization, and aborts while the autonomy-stack tail keeps the
         # robot moving. Poll until the body actually arrives, stalls, or
-        # times out.
-        return self._poll_until_arrived(goal_handle, x, y, target, goal_id)
+        # times out. If a yaw was requested, _poll_until_arrived also runs
+        # the in-place yaw alignment after XY arrival.
+        return self._poll_until_arrived(goal_handle, x, y, target, goal_id,
+                                         yaw_deg=yaw_deg)
 
     # ------------------------------------------------------------------
     # Async navigate: start_navigate / check_nav_status / cancel_navigate
@@ -437,7 +524,8 @@ class ZMQBridgeNode(Node):
             self._nav_target_x      = 0.0
             self._nav_target_y      = 0.0
 
-    def _handle_start_navigate(self, goal_id: str, x: float, y: float, landmark: str) -> dict:
+    def _handle_start_navigate(self, goal_id: str, x: float, y: float, landmark: str,
+                               yaw_deg: float | None = None) -> dict:
         """Start Nav2 goal and return immediately. Use check_nav_status to poll."""
         # Self-heal: clear stale state from a previous nav whose client stopped polling.
         self._reap_finished_nav()
@@ -457,13 +545,15 @@ class ZMQBridgeNode(Node):
                 'message': 'Nav2 action server /navigate_to_pose is not available',
             }
 
+        qz, qw = _yaw_deg_to_quat_zw(yaw_deg)
         goal = NavigateToPose.Goal()
         goal.pose.header.stamp = self.get_clock().now().to_msg()
         goal.pose.header.frame_id = _MAP_FRAME
         goal.pose.pose.position.x = x
         goal.pose.pose.position.y = y
         goal.pose.pose.position.z = 0.0
-        goal.pose.pose.orientation.w = 1.0
+        goal.pose.pose.orientation.z = qz
+        goal.pose.pose.orientation.w = qw
 
         send_future = self._nav_client.send_goal_async(goal)
         # Wait only for goal acceptance (fast, ~1-2s)
@@ -496,6 +586,7 @@ class ZMQBridgeNode(Node):
             self._nav_t_start       = t0
             self._nav_last_dist     = d0
             self._nav_last_prog_t   = t0
+            self._nav_yaw_deg       = yaw_deg
 
         self.get_logger().info(f'[{goal_id[:8]}] Navigation started to {target}')
         return {
@@ -517,6 +608,7 @@ class ZMQBridgeNode(Node):
             target = self._nav_target_desc
             tx, ty = self._nav_target_x, self._nav_target_y
             t_start = self._nav_t_start
+            pending_yaw_deg = self._nav_yaw_deg
 
         pose = self._get_pose_full()
         now = time.time()
@@ -534,12 +626,23 @@ class ZMQBridgeNode(Node):
             self._nav_target_desc   = ''
             self._nav_target_x      = 0.0
             self._nav_target_y      = 0.0
+            self._nav_yaw_deg       = None
 
         if dist <= _ARRIVAL_THRESHOLD_M:
             with self._nav_lock:
                 _clear_state()
+            yaw_msg = ''
+            if pending_yaw_deg is not None:
+                aligned, err_deg = self._align_yaw_in_place(
+                    math.radians(float(pending_yaw_deg))
+                )
+                if aligned:
+                    yaw_msg = f', yaw aligned ({err_deg:+.1f}° err)'
+                else:
+                    yaw_msg = (f', yaw partial ({err_deg:+.1f}° err after '
+                               f'{_NAV_YAW_TIMEOUT_S:.0f}s)')
             return {'goal_id': goal_id, 'status': 'success',
-                    'message': f'Arrived at {target} (dist={dist:.2f} m)'}
+                    'message': f'Arrived at {target} (dist={dist:.2f} m){yaw_msg}'}
 
         with self._nav_lock:
             if (self._nav_last_dist - dist) >= _NAV_STALL_PROG_M:
@@ -576,6 +679,7 @@ class ZMQBridgeNode(Node):
             self._nav_target_desc   = ''
             self._nav_target_x      = 0.0
             self._nav_target_y      = 0.0
+            self._nav_yaw_deg       = None
         self.get_logger().info(f'[{goal_id[:8]}] Navigation canceled')
         return {'goal_id': goal_id, 'status': 'ok', 'message': 'Navigation canceled'}
 
@@ -1093,7 +1197,7 @@ def main():
     parser.add_argument('--port',               type=int,   default=int(os.environ.get('ZMQ_PORT', 5555)))
     parser.add_argument('--spin-kp',            type=float, default=1.5)
     parser.add_argument('--move-kp',            type=float, default=0.8)
-    parser.add_argument('--spin-threshold-deg', type=float, default=3.0)
+    parser.add_argument('--spin-threshold-deg', type=float, default=10.0)
     parser.add_argument('--move-threshold-m',   type=float, default=0.05)
     args = parser.parse_args()
 

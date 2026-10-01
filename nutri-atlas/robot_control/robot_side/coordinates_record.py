@@ -143,7 +143,8 @@ def main():
             records.append(entry)
             _save_records(output_path, records)
             print(
-                f'Recorded #{entry["index"]}: x={entry["x"]}, y={entry["y"]} '
+                f'Recorded #{entry["index"]}: x={entry["x"]}, y={entry["y"]}, '
+                f'yaw_rad={entry["yaw_rad"]} ({math.degrees(entry["yaw_rad"]):.1f}°) '
                 f'(base={entry["base_frame"]})'
             )
     except KeyboardInterrupt:
