@@ -49,7 +49,7 @@ Message types handled:
 Usage:
     python zmq_bridge_node.py [--port 5555]
                               [--spin-kp 1.5] [--move-kp 0.8]
-                              [--spin-threshold-deg 10.0] [--move-threshold-m 0.05]
+                              [--spin-threshold-deg 3.0] [--move-threshold-m 0.05]
 
 Environment variables:
     ZMQ_PORT   default 5555
@@ -110,9 +110,9 @@ _NAV_TIMEOUT = 120.0   # seconds
 # not Nav2's BT result. Nav2 in this stack is unreliable (BT SIGSEGVs, false
 # successes from stale localization, aborts while the controller tail keeps
 # the robot moving). Polling TF survives all three.
-_ARRIVAL_THRESHOLD_M = 1.0     # success when within this distance
+_ARRIVAL_THRESHOLD_M = 0.5    # success when within this distance
 _NAV_POLL_S          = 0.3     # TF poll period during navigation
-_NAV_STALL_S         = 30.0    # max seconds with no measurable progress (> Nav2 progress checker's 20 s)
+_NAV_STALL_S         = 15.0    # max seconds with no measurable progress
 _NAV_STALL_PROG_M    = 0.05    # min distance closed to count as progress
 
 # Final yaw alignment after XY arrival — done by us, not Nav2 (Nav2 in this
@@ -1197,7 +1197,7 @@ def main():
     parser.add_argument('--port',               type=int,   default=int(os.environ.get('ZMQ_PORT', 5555)))
     parser.add_argument('--spin-kp',            type=float, default=1.5)
     parser.add_argument('--move-kp',            type=float, default=0.8)
-    parser.add_argument('--spin-threshold-deg', type=float, default=10.0)
+    parser.add_argument('--spin-threshold-deg', type=float, default=15.0)
     parser.add_argument('--move-threshold-m',   type=float, default=0.05)
     args = parser.parse_args()
 
