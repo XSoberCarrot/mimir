@@ -25,6 +25,8 @@ import mimetypes
 import os
 import re
 
+from context_budget import ContextBudget, ContextOverflow, KIND_CAMERA, KIND_NUDGE
+
 # --- Tool definitions (OpenAI function format) ---
 TOOL_DEFINITIONS = [
     {
@@ -412,12 +414,16 @@ def _parse_tool_calls(text: str) -> list:
     return calls
 
 
-def _run_turn(messages: list, llm, tool_definitions: list, tools: dict) -> str:
+def _run_turn(messages: list, llm, tool_definitions: list, tools: dict, budget: ContextBudget = None) -> str:
     """
     Run one LLM turn (with tool loop). Returns the final assistant text reply.
     Modifies messages in-place by appending assistant + tool result messages.
+    If a ContextBudget is given, the history is trimmed before every LLM call so the
+    prompt (including image tokens) fits the server's context window.
     """
     while True:
+        if budget is not None:
+            budget.fit(messages)
         # Collect full streamed response
         full_content = ''
         for chunks in llm.chat(messages=messages, functions=tool_definitions, stream=True):
@@ -432,7 +438,7 @@ def _run_turn(messages: list, llm, tool_definitions: list, tools: dict) -> str:
         if not tool_calls:
             if not clean.strip():
                 # LLM emitted only <think> content mid-task — nudge it to continue
-                messages.append({'role': 'user', 'content': 'Continue.'})
+                messages.append({'role': 'user', 'content': 'Continue.', 'extra': {'kind': KIND_NUDGE}})
                 continue
             return clean   # final answer — no more tool calls
 
@@ -461,12 +467,14 @@ def _run_turn(messages: list, llm, tool_definitions: list, tools: dict) -> str:
                                 ContentItem(image=f'data:{mime};base64,{b64}'),
                                 ContentItem(text='This is the current camera view. Describe what you see.'),
                             ],
+                            'extra': {'kind': KIND_CAMERA},   # not a new question (see context_budget)
                         })
                 except (json.JSONDecodeError, KeyError):
                     pass
 
 
 # --- Chat loop ---
+REPLY_TOKENS = 2048   # tokens reserved for each reply
 def main():
     parser = argparse.ArgumentParser(description='Robot Navigation Assistant')
     parser.add_argument('--robot-ip',   default=os.environ.get('ROBOT_IP',      '127.0.0.1'))
@@ -497,8 +505,17 @@ def main():
         'model_type': 'qwenvl_oai',
         'model_server': 'http://localhost:8080/v1',
         'api_key': 'EMPTY',
-        'generate_cfg': {'thought_in_content': True},
+        'generate_cfg': {
+            'thought_in_content': True,
+            'max_input_tokens': 0,          # disable qwen-agent's text-only trimming; ContextBudget does it
+            'max_tokens': REPLY_TOKENS,     # must match ContextBudget.reserve_output
+        },
     })
+
+    # Keeps the history inside the server's context window, counting image tokens
+    # (n_ctx is read from the server's /props).
+    budget = ContextBudget('http://localhost:8080', reserve_output=REPLY_TOKENS)
+    budget.fixed_overhead = budget.count_text(json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)) + 300
 
     tools = {
         'list_landmarks':               ListLandmarks(),
@@ -516,6 +533,7 @@ def main():
     print(f'  Robot IP      : {args.robot_ip}:{args.robot_port}')
     print(f'  Detection mode: {args.detection_mode}')
     print(f'  Detector      : {args.detector}')
+    print(f'  Context       : {budget.n_ctx} tokens ({budget.limit} for the prompt)')
     print()
 
     # Clear detected landmarks from previous session
@@ -538,7 +556,13 @@ def main():
         messages.append({'role': 'user', 'content': _build_user_content(query)})
 
         print('Assistant: ', end='', flush=True)
-        reply = _run_turn(messages, llm, TOOL_DEFINITIONS, tools)
+        try:
+            reply = _run_turn(messages, llm, TOOL_DEFINITIONS, tools, budget)
+        except ContextOverflow as e:
+            # Even the system message + this turn do not fit: undo the turn and tell the user.
+            last_q = ContextBudget._turn_starts(messages)[-1]
+            del messages[last_q:]
+            reply = f'[Sorry, this request is too long to process ({e}). Please shorten it or send a smaller image.]'
         print(reply)
         print()
 
