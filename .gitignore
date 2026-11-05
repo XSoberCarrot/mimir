@@ -37,3 +37,5 @@ jetson_deployment/updated_scripts
 mimir/Uttej_jbhi_2026_nutri_assistant_agent/
 
 nutri_rag/user_preferences.duckdb.wal
+
+nutri-atlas/robot_control/robot_voice/nutriatlas_voice/

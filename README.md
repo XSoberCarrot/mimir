@@ -10,8 +10,8 @@ nutri_graph  →  nutri_rag  →  nutri-atlas  →  robot (Go2)
 
 | Machine | Runs |
 |---|---|
-| **Operator PC** (Linux, NVIDIA GPU) | LLM server, knowledge base, `robot_assistant.py` |
-| **Robot** (Unitree Go2 onboard PC, ROS 2 **Foxy**) | Nav2 / SLAM / camera stack, ZMQ bridge |
+| **Operator PC** (Linux, NVIDIA GPU) | LLM server, knowledge base, `robot_assistant.py` (or `speak_assistant.py` for spoken replies) |
+| **Robot** (Unitree Go2 onboard PC, ROS 2 **Foxy**) | Nav2 / SLAM / camera stack, ZMQ bridge, speech nodes (optional) |
 
 ### Inference only, or evaluation too?
 
@@ -24,7 +24,7 @@ Steps are tagged:
 | If you only want… | Do these sections |
 |---|---|
 | Nutrition assistant | 1.1, 1.2 (USDA + SR Legacy), 1.3 (steps 1, 2, 5), 1.4, then §2.1–2.2 |
-| Robot demo | the above + 1.5, §3, §4 |
+| Robot demo | the above + 1.5, §3 (3.4 only for spoken replies), §4 |
 | Benchmarks | everything, including all **[eval]** steps |
 
 ---
@@ -234,6 +234,18 @@ python3 coordinates_record.py --output landmarks_record.json
 ```
 Press **Enter** to record and `q` to quit. Then copy `x`, `y` and `yaw_rad` from the JSON into `landmarks.yaml`. Keep landmarks ≥ ~0.6 m from furniture, because Nav2 keeps the robot ~0.55 m away from obstacles.
 
+### 3.4 Speech nodes on the robot — [optional] (spoken replies)
+
+The robot says the assistant's replies through its speaker. The LLM stays on the operator PC; only the reply text is sent to the robot (ZMQ port **5562**), where ElevenLabs generates the audio. Details: `nutri-atlas/robot_control/robot_voice/server_version/README.md`.
+
+```bash
+# operator PC
+ssh unitree@<ROBOT_IP> 'mkdir -p ~/test_ws/atlas/robot_voice'
+scp nutri-atlas/robot_control/robot_voice/server_version/robot/* unitree@<ROBOT_IP>:~/test_ws/atlas/robot_voice/
+```
+
+Needs: internet on the robot (ElevenLabs), and Chang's `speech_processor` build on the robot (`~/Chang/demo_proj/project_legged_robot/ros2_code/install`, used read-only; it holds the API key). Never run these together with the speech nodes of `~/Chang/nutriatlas_voice` (every sentence would be spoken twice); `speech_nodes.sh` refuses to start if they are running.
+
 ---
 
 ## 4. Running: robot demo (real world)
@@ -243,7 +255,7 @@ Press **Enter** to record and `q` to quit. Then copy `x`, `y` and `yaw_rad` from
 - The operator PC and the robot must be on the same Wi-Fi subnet (`192.168.0.x`).
 - **Get the robot's IP on the robot** with `hostname -I`, and use the `192.168.0.x` address. Ignore `192.168.123.x` (Unitree internal) and `172.17.x.x` (Docker). The address can change after a reboot.
 - From the operator PC: `ping <ROBOT_IP>`.
-- The robot must accept TCP **5555** (bridge), **5557** and **5558** (camera).
+- The robot must accept TCP **5555** (bridge), **5557** and **5558** (camera), and **5562** (speech, only with spoken replies).
 
 ### 4.2 On the robot (2 terminals)
 
@@ -259,6 +271,11 @@ cd ~/test_ws/go2_nav_ws && source install/setup.bash
 cd ~/test_ws/atlas/zmq_communication
 python3 zmq_bridge_node_working_v2.py
 #   options: --port 5555 --spin-kp 1.5 --spin-threshold-deg 15 --move-kp 0.8 --move-threshold-m 0.05
+
+# Terminal 2, with spoken replies instead (§3.4): speech nodes + the same bridge; Ctrl+C stops both
+cd ~/test_ws/atlas/robot_voice && ./start_robot_side.sh
+#   bridge options are passed on: ./start_robot_side.sh --spin-threshold-deg 15
+#   speech nodes alone: ./speech_nodes.sh start | stop | status   (logs in ~/test_ws/atlas/robot_voice/logs/)
 ```
 
 Check the robot is localized in RViz before sending goals. Gait IDs are listed in `nutri-atlas/robot_control/robot_side/GO2_SPORT_API.md`.
@@ -274,8 +291,14 @@ cd nutri_rag && bash scripts/start_server.sh
 # Terminal 2: robot assistant
 cd nutri-atlas/robot_control
 python robot_assistant.py --robot-ip <ROBOT_IP> --detection-mode real                  # YOLO detector (default)
-python robot_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm   # open-vocabulary, uses the LLM's vision
+python robot_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm   # open-vocabulary, uses the LLM's vision
+
+# Terminal 2, with spoken replies instead (§3.4): same arguments, replies also spoken by the robot
+python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm
+python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm --no-voice   # printed only
 ```
+
+`speak_assistant.py` runs `robot_assistant.py` unchanged and sends each reply to the robot (printed as `[speak] ...`). `SPEAK_STREAM=first` (default) speaks the first sentence while the LLM is still writing; `each` speaks every sentence when it is finished; `off` speaks the whole answer at the end.
 
 On startup, the assistant clears the previous session's detected objects. Example requests:
 ```
@@ -301,6 +324,7 @@ python seperate_detector_real_world_auto.py --robot-ip <ROBOT_IP>   # automatic;
 | Setting | Where | Default |
 |---|---|---|
 | Robot port | `--robot-port` / `ROBOT_PORT` | 5555 |
+| Speech port (`speak_assistant.py`) | `--speak-port` / `SPEAK_PORT` | 5562 |
 | Navigation reply timeout (client) | `NAV_TIMEOUT_MS` (navigate / spin tools) | 60000 ms |
 | Labels to keep when registering objects | `INTEREST_OBJECTS` (comma list) | all |
 | Bridge "no progress" failure | `_NAV_STALL_S` in the bridge | 30 s |
@@ -328,6 +352,8 @@ Simulation uses a different bridge and an extra object server, in an autonomy-st
 | Navigation "fails" with `No progress … for 30s` and the robot never moved | Check the Nav2 logs on the robot (`~/.ros/log/bt_navigator_*`, `controller_server_*`). A landmark too close to obstacles is a common cause. |
 | `Trajectory Hits Obstacle` in the Nav2 log at the start of a trip | The start pose is too close to an obstacle. Move that landmark into open space. |
 | Robot shakes near the goal | Bridge and Nav2 position tolerances differ (see §3.2). |
+| `[speak]` lines printed but the robot is silent | Speech nodes not running (`./speech_nodes.sh status` on the robot) or wrong `--robot-ip`. Check `~/test_ws/atlas/robot_voice/logs/speech_bridge.log` (text received) and `tts_node.log` (generation, needs internet). |
+| No voice and no `[speak]` lines | You started `robot_assistant.py` or used `--no-voice`; start `speak_assistant.py`. |
 | Gait falls back to default | Check `ros2 param get /go2_base gait_api_id` and the `Gait set:` lines in the launch output. |
 | `undefined symbol` importing torch_scatter | PyG wheels don't match torch/CUDA (see §1.1). |
 | `run_bench.py` fails with `FileNotFoundError` on `qwen_test` | Create `../qwen_test/lm-evaluation-harness` (see §1.6). |
