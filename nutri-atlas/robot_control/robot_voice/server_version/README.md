@@ -23,8 +23,8 @@ Requirements: the robot needs internet (ElevenLabs); the server must reach the r
 
 ```bash
 # on the server
-ssh unitree@<ROBOT_IP> 'mkdir -p ~/test_ws/atlas/robot_voice'
-scp robot/* unitree@<ROBOT_IP>:~/test_ws/atlas/robot_voice/
+ssh unitree@192.168.0.164 'mkdir -p ~/test_ws/atlas/robot_voice'
+scp robot/* unitree@192.168.0.164:~/test_ws/atlas/robot_voice/
 ```
 
 Optional: copy the existing audio cache so sentences already generated are not paid for again
@@ -54,8 +54,8 @@ cd nutri_rag && bash scripts/start_server.sh
 
 # Terminal 2: assistant with voice (instead of robot_assistant.py)
 cd nutri-atlas/robot_control
-python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm
-python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm --no-voice   # printed only
+python speak_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm
+python speak_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm --no-voice   # printed only
 ```
 
 `nutri-atlas/robot_control/speak_assistant.py` is the one to run (next to `robot_assistant.py`).
@@ -88,7 +88,7 @@ connects to it with `--robot-ip`, so the robot does not need the server's addres
 ```bash
 # server, Terminal 2: same as before plus --mic (waits for the robot instead of the keyboard)
 cd nutri-atlas/robot_control
-python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm --mic
+python speak_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm --mic
 
 # robot, Terminal 2 with --mic: speech nodes + bridge + microphone in one terminal
 #   (asks for the sudo password first: the PageUp key hook needs root; mic lines start with [mic])
@@ -107,7 +107,7 @@ Quit the server with Ctrl+C (in `--mic` mode it does not read the keyboard).
 # robot
 cd ~/test_ws/atlas/robot_voice && ./speech_nodes.sh start      # status | stop
 # server
-python -c "import zmq; s=zmq.Context().socket(zmq.PUSH); s.connect('tcp://<ROBOT_IP>:5562'); s.send_string('Hello, I am ready.'); s.close(linger=2000)"
+python -c "import zmq; s=zmq.Context().socket(zmq.PUSH); s.connect('tcp://192.168.0.164:5562'); s.send_string('Hello, I am ready.'); s.close(linger=2000)"
 ```
 
 Logs on the robot: `~/test_ws/atlas/robot_voice/logs/speech_bridge.log` (text received) and
