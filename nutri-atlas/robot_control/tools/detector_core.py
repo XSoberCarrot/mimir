@@ -142,6 +142,27 @@ _VLM_GROUNDING_PROMPT = (
     'Output ONLY the detection lines, nothing else.'
 )
 
+# register_objects with targets: look for those. The general prompt above found nothing for "blue chair"
+# in an office ("There are none."); this one found it, and nothing for a target that was not there.
+_VLM_TARGET_PROMPT = (
+    'Find every {targets} in this image. For each one output exactly:\n'
+    '<ref>name</ref><box>(x1, y1, x2, y2)</box>\n'
+    'where name is one of: {targets}. '
+    'Coordinates are in [0, 1000] normalized range. If there is none, output nothing. '
+    'Output ONLY the detection lines, nothing else.'
+)
+
+# check_food: food names only, no boxes, named by what is inside the package. With the grounding
+# prompt above the kitchen counter gave "cup, box, paper" for a milk jug, a pizza box and an ice cream
+# box; a grounding prompt for food only gave "food" or misread names ("pot mac and cheese" for Potomac
+# Pizza). This plain list gave "oats, pizza, ice cream, milk".
+_VLM_FOOD_PROMPT = (
+    'List every food and drink you can see in this image, including food in packages, boxes, bags, bottles, '
+    'jugs and cans: read the text on each package and say which food is inside (e.g. a carton that says '
+    'Tropicana -> orange juice, a box that says Barilla -> pasta). Skip things that are not food '
+    '(appliances, dishes, furniture). Answer with one short food name per line and nothing else.'
+)
+
 
 class VLMDetector:
     """VLM-based object detector using Qwen3.5 grounding.
@@ -167,8 +188,18 @@ class VLMDetector:
         """Run VLM grounding on a BGR image. Returns detections WITHOUT depth."""
         return self._grounding(bgr)
 
-    def detect_from_files(self, color_path: str, depth_path: str) -> list[Detection]:
+    def list_foods(self, bgr: np.ndarray) -> list[str]:
+        """Names of the foods in a BGR image (no boxes), for check_food."""
+        _, buf = cv2.imencode('.jpg', bgr)
+        response = self._call_vlm(base64.b64encode(buf).decode(), _VLM_FOOD_PROMPT)
+        print(f'[VLM] foods: {response.strip()!r}')
+        names = [re.sub(r'^[\s\-*•\d.)]+', '', line).strip(' .,') for line in response.splitlines()]
+        return [n for n in names if n]
+
+    def detect_from_files(self, color_path: str, depth_path: str, targets: set | None = None) -> list[Detection]:
         """Run VLM grounding on saved files. Returns detections WITH 3D positions.
+
+        targets: look only for these (prompt _VLM_TARGET_PROMPT); None = everything.
 
         1. Load color + depth from disk
         2. VLM grounding → bounding boxes
@@ -180,7 +211,7 @@ class VLMDetector:
             return []
         depth = np.load(depth_path)
 
-        dets = self._grounding(bgr)
+        dets = self._grounding(bgr, targets)
 
         # Fill 3D positions from depth
         dh, dw = depth.shape[:2]
@@ -198,7 +229,7 @@ class VLMDetector:
 
         return dets
 
-    def _grounding(self, bgr: np.ndarray) -> list[Detection]:
+    def _grounding(self, bgr: np.ndarray, targets: set | None = None) -> list[Detection]:
         """Send image to VLM, parse <ref><box> response → list[Detection]."""
         h, w = bgr.shape[:2]
 
@@ -206,7 +237,9 @@ class VLMDetector:
         b64 = base64.b64encode(buf).decode()
         print(f'[VLM] sending {len(b64)//1024}KB image ({w}x{h}) to server...')
 
-        response = self._call_vlm(b64)
+        prompt = (_VLM_TARGET_PROMPT.format(targets=', '.join(sorted(targets))) if targets
+                  else _VLM_GROUNDING_PROMPT)
+        response = self._call_vlm(b64, prompt)
         print(f'[VLM] response ({len(response)} chars): {response[:300]}')
 
         results = []
@@ -233,7 +266,7 @@ class VLMDetector:
               f'{", ".join(r.label for r in results) or "none"}')
         return results
 
-    def _call_vlm(self, image_b64: str) -> str:
+    def _call_vlm(self, image_b64: str, prompt: str = _VLM_GROUNDING_PROMPT) -> str:
         payload = {
             'model': 'unsloth/Qwen3.5-9B-GGUF',
             'messages': [{
@@ -241,7 +274,7 @@ class VLMDetector:
                 'content': [
                     {'type': 'image_url',
                      'image_url': {'url': f'data:image/jpeg;base64,{image_b64}'}},
-                    {'type': 'text', 'text': _VLM_GROUNDING_PROMPT},
+                    {'type': 'text', 'text': prompt},
                 ],
             }],
             'max_tokens': self.max_tokens,
@@ -253,7 +286,8 @@ class VLMDetector:
             headers={'Content-Type': 'application/json'},
         )
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            # 240 s: a 4B model can repeat boxes up to max_tokens (~185 s); at 120 s nothing was detected
+            with urllib.request.urlopen(req, timeout=float(os.environ.get('VLM_TIMEOUT', 240))) as resp:
                 data = json.loads(resp.read())
             return data['choices'][0]['message']['content']
         except Exception as e:

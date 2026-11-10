@@ -66,7 +66,7 @@ Options (environment variables on the server):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SPEAK_STREAM` | `first` | `first`: first sentence spoken while the LLM is still writing, rest at the end. `each`: every sentence when finished. `off`: whole answer at the end |
+| `SPEAK_STREAM` | `off` | `off`: whole answer when it is done; the plan the LLM sometimes writes before a tool call is never spoken. `first`: first sentence spoken while the LLM is still writing (about 3 s sooner, but can speak such a plan), rest at the end. `each`: every sentence when finished |
 | `SPEAK_PORT` | `5562` | robot port (or `--speak-port`) |
 
 On the robot, `PLAYBACK_PAD` (default 1.0 s) is the wait after each sentence; 0.2 s lost sentences.

@@ -164,8 +164,11 @@ class NutriAssistant:
 
         # Step 4-5: DB nutrient query + GAT neighbor expansion
         # Dispatch v1 (current) vs v2 (target-as-query hybrid) via env var.
+        # With available foods always v2: it ranks only those foods, while v1 takes the
+        # top 50 of the whole database by one nutrient and then drops the unavailable
+        # ones, which usually leaves nothing.
         eaten_fdc_ids = {item["fdc_id"] for item in meal_history}
-        if self._recommend_mode == "v2":
+        if self._recommend_mode == "v2" or available_fdc_ids is not None:
             options = self._recommender.recommend_v2(
                 targets=targets,
                 exclude_fdc_ids=eaten_fdc_ids,
@@ -242,6 +245,7 @@ class NutriAssistant:
             next_meal=next_meal,
             preference_summary=pref_summary if pref_summary["favorites"] else None,
             meal_candidates=meal_candidates,
+            available_only=available_fdc_ids is not None,
         )
 
         recommendation = chat_completion(messages, max_tokens=1024)

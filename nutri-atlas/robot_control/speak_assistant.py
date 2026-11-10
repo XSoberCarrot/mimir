@@ -4,10 +4,11 @@ robot_assistant.py is used unmodified (same arguments, same keyboard input, same
 cleaned for speech (no markdown, tags, emojis; "kcal" -> "kilocalorie") and pushed over ZMQ to the robot's
 speech_bridge.py (--speak-port, default 5562) -> /tts -> tts_stream_node.py -> Go2 speaker.
 
-  SPEAK_STREAM=first (default) the first finished sentence is spoken while the LLM is still writing,
-                               the rest when the answer is done
-  SPEAK_STREAM=each            every sentence as soon as it is finished
-  SPEAK_STREAM=off             the whole answer at the end
+  SPEAK_STREAM=off (default)   the whole answer when it is done; text the LLM writes before a tool call
+                               (its plan) is never spoken
+  SPEAK_STREAM=first           the first finished sentence is spoken while the LLM is still writing,
+                               the rest when the answer is done (may speak a plan written before a tool call)
+  SPEAK_STREAM=each            every sentence as soon as it is finished (same risk)
 
 Speech code taken from nutriatlas_voice/voice_assistant.py (speech_text, speak, streaming).
 
@@ -33,7 +34,10 @@ import zmq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RC = HERE   # nutri-atlas/robot_control (next to robot_assistant.py)
-SPEAK_STREAM = os.environ.get("SPEAK_STREAM", "first")
+# default off: before a tool call the LLM sometimes writes its plan as plain text (~450 characters:
+# "The user is asking for ... I should: 1. ..."), which streaming spoke. Only a finished reply without a
+# tool call is spoken then; it costs the writing time of the answer (~3 s at ~90 tokens/s)
+SPEAK_STREAM = os.environ.get("SPEAK_STREAM", "off")
 # end of a sentence: . ! ? (not "1." of a list) and closing quotes/brackets, followed by a space; or a newline
 SENTENCE_END = re.compile(r'(?<!\d)[.!?]+["\')\]]*(?=\s)|\n')
 # units after a number, as the TTS should say them (it reads "kcal" letter by letter)

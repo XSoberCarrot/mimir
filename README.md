@@ -305,7 +305,7 @@ cd ~/test_ws/atlas/robot_voice && ./start_robot_side.sh --mic     # or separatel
 
 With `--mic`, questions come from the robot microphone instead of the keyboard: PageUp on the presenter remote starts and stops recording, Google Speech-to-Text turns it into text. Needs the mic receiver (`lsusb`: `4c4a:4155`) and remote receiver (`1ea7:1066`) plugged into the robot. Details in `robot_voice/server_version/README.md`.
 
-`speak_assistant.py` runs `robot_assistant.py` unchanged and sends each reply to the robot (printed as `[speak] ...`). `SPEAK_STREAM=first` (default) speaks the first sentence while the LLM is still writing; `each` speaks every sentence when it is finished; `off` speaks the whole answer at the end.
+`speak_assistant.py` runs `robot_assistant.py` unchanged and sends each reply to the robot (printed as `[speak] ...`). `SPEAK_STREAM=off` (default) speaks the whole answer when it is done, so the plan the LLM sometimes writes before a tool call ("The user is asking for ...") is never spoken; `first` speaks the first sentence while the LLM is still writing (about 3 s sooner, but can speak such a plan); `each` speaks every sentence when it is finished.
 
 On startup, the assistant clears the previous session's detected objects. Example requests:
 ```
@@ -316,7 +316,11 @@ What do you see right now?
 Remember what you see.
 Turn left 90 degrees.
 I ate a burger for lunch, what should I eat for dinner?
+I ate a burger for lunch, I have eggs, bread and milk, what can I make for dinner?
+I ate a burger for lunch, what can I make for dinner with what you see?
 ```
+
+Meal recommendations use the foods actually available. If the user lists foods ("I have eggs, bread and milk"), the meal is built only from those, and the robot does not move. If the user says "with what you see", the robot checks the current camera view for food (`check_food`). Otherwise the first answer is the ideal meal; if the user agrees to "check the kitchen", the robot goes there, runs `check_food`, and the second answer uses only the foods it found. `check_food` keeps its own food list (per place, for this session; a new check of a place replaces it) and drops non-food and generic labels ("cup", "drinks"). It is separate from `register_objects` and the landmark map, which the meal tool does not read. With available foods the recommender ranks only those foods (`recommend_v2`).
 Type `exit` to quit. The system prompt and the landmarks are loaded at startup, so restart after changing either.
 
 **Optional standalone detector windows** (live YOLO view, auto-registration). These are not required; the assistant runs detection itself:
@@ -332,12 +336,13 @@ python seperate_detector_real_world_auto.py --robot-ip <ROBOT_IP>   # automatic;
 |---|---|---|
 | Robot port | `--robot-port` / `ROBOT_PORT` | 5555 |
 | Speech port (`speak_assistant.py`) | `--speak-port` / `SPEAK_PORT` | 5562 |
-| Navigation reply timeout (client) | `NAV_TIMEOUT_MS` (navigate / spin tools) | 60000 ms |
+| Navigation reply timeout (client) | `NAV_TIMEOUT_MS` (navigate / spin tools) | 130000 ms navigate (must stay above the bridge's 120 s), 60000 ms spin |
 | Labels to keep when registering objects | `INTEREST_OBJECTS` (comma list) | all |
+| VLM detection timeout | `VLM_TIMEOUT` | 240 s |
 | Bridge "no progress" failure | `_NAV_STALL_S` in the bridge | 30 s |
 | Bridge navigation timeout | `_NAV_TIMEOUT` in the bridge | 120 s |
 
-> Long trips in StaticWalk (e.g. start → kitchen) can take more than 60 s. If the assistant reports `No reply from robot within 60s` while the robot is still walking, start it with `NAV_TIMEOUT_MS=130000 python robot_assistant.py ...`.
+> Long trips in StaticWalk (e.g. start → kitchen) can take more than 60 s, so the navigate tool waits 130 s by default (just above the bridge's own 120 s timeout). Setting `NAV_TIMEOUT_MS` overrides it for all tools.
 
 ---
 

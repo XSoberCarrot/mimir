@@ -18,7 +18,9 @@ from .zmq_client import ZMQNavClient
 # --- Config from environment (override via env vars on the server) ---
 _ROBOT_IP   = os.environ.get('ROBOT_IP',      '10.203.168.250')
 _ROBOT_PORT = int(os.environ.get('ROBOT_PORT', 5555))
-_NAV_TIMEOUT_MS = int(os.environ.get('NAV_TIMEOUT_MS', 60000))
+# longer than the bridge's own navigation timeout (_NAV_TIMEOUT, 120 s): a long StaticWalk trip
+# (kitchen -> start point) takes more than 60 s, and the old 60 s gave up while the robot was walking
+_NAV_TIMEOUT_MS = int(os.environ.get('NAV_TIMEOUT_MS', 130000))
 
 _DETECTION_MODE = os.environ.get('DETECTION_MODE', 'sim')
 

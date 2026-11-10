@@ -183,8 +183,44 @@ TOOL_DEFINITIONS = [
                         'type': 'string',
                         'description': 'Which meal to recommend for: "breakfast", "lunch", "dinner", or "snack". Default: "lunch".',
                     },
+                    'disliked_ingredients': {
+                        'type': 'array',
+                        'items': {'type': 'string'},
+                        'description': 'Foods the user said they dislike or are allergic to, e.g. ["peanuts"]. Omit if none.',
+                    },
+                    'health_condition': {
+                        'type': 'string',
+                        'description': '"diabetes" | "hypertension" | "obesity", only if the user stated it. Omit otherwise.',
+                    },
+                    'available_foods': {
+                        'type': 'string',
+                        'description': (
+                            'Comma-separated foods the user said they have right now, e.g. "eggs, bread, milk". '
+                            'The meal is then built only from these. Omit if the user did not list any.'
+                        ),
+                    },
                 },
                 'required': ['eaten_foods'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'check_food',
+            'description': (
+                'Look at the current camera view and remember the FOODS in it for get_meal_recommendation. '
+                'Non-food objects are ignored. Checking the same place again replaces its foods. '
+                'Does not add anything to the landmark map.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'place': {
+                        'type': 'string',
+                        'description': 'Where the robot is, e.g. "kitchen". Default: "here".',
+                    },
+                },
             },
         },
     },
@@ -329,7 +365,9 @@ SYSTEM_MSG = {
         '- navigate_to_landmark: PURE travel, no observation (see decision table). Accepts an optional yaw_deg (final heading in degrees, 0=+x, 90=+y, -90=-y). If omitted, uses the landmark\'s stored yaw if any, else identity.\n'
         '- spin_robot: rotate in place (degrees, +CCW / -CW).\n'
         '- forget_object: remove a stale detected object from the persistent map by frame name.\n'
-        '- get_meal_recommendation: recommend food based on nutritional gap from what the user has eaten.\n\n'
+        '- get_meal_recommendation: recommend food based on nutritional gap from what the user has eaten.\n'
+        '- check_food: find the FOODS in the current camera view for get_meal_recommendation (nutrition only;\n'
+        '  register_objects is for landmarks, never for food).\n\n'
         'IMPORTANT:\n'
         '- scan_objects never stores anything to landmark history.\n'
         '- register_objects is the ONLY way to add detected objects to landmark history — only call when the user asks to remember/save, or when actively searching for a specific object.\n'
@@ -345,8 +383,23 @@ SYSTEM_MSG = {
         '3. If still not found, do a 360° explore: spin 90° + register_objects(targets="X"), repeat 4 times.\n'
         '4. If still not found, report "not found nearby" and ask the user where to look. Do NOT auto-travel to other landmarks.\n\n'
         'For nutrition questions ("I ate X, what should I eat?", "recommend dinner", etc.), '
-        'follow this TWO-PHASE pattern:\n\n'
-        'Phase 1 — Ideal recommendation (always do this on the FIRST nutrition turn):\n'
+        'FIRST check these two cases:\n\n'
+        'Listed foods — the user says which foods they have (e.g. "I have eggs, bread and milk",\n'
+        '"there is only rice and chicken at home"); do this INSTEAD of Phase 1 and Phase 2:\n'
+        '  Step 1. Call get_meal_recommendation with the parameters described in Phase 1 Step 1, plus\n'
+        '          available_foods="<the foods the user listed, comma-separated>".\n'
+        '          Do NOT navigate, scan or register anything.\n'
+        '  Step 2. Present the recommendation; it is built only from those foods. Do not offer to check\n'
+        '          the kitchen.\n\n'
+        'Seen foods — the user\'s message refers to what you see / saw / can see / what is in front of you\n'
+        '(e.g. "based on what you can see", "with what you just saw"); do this INSTEAD of Phase 1 and Phase 2:\n'
+        '  Step 1. check_food() — it finds the foods in the current camera view.\n'
+        '          scan_objects alone does NOT give them to get_meal_recommendation.\n'
+        '  Step 2. Call get_meal_recommendation with the parameters described in Phase 1 Step 1.\n'
+        '  Step 3. Present the recommendation; it is built only from the foods you saw. Do not offer to check\n'
+        '          the kitchen.\n\n'
+        'Otherwise follow this TWO-PHASE pattern:\n\n'
+        'Phase 1 — Ideal recommendation (on the FIRST nutrition turn, when neither case above applies):\n'
         '  Step 1. Extract from the user\'s message:\n'
         '    - eaten_foods   : what they ate (REQUIRED)\n'
         '    - eaten_meal_type / next_meal : "breakfast" | "lunch" | "dinner" | "snack"\n'
@@ -363,13 +416,12 @@ SYSTEM_MSG = {
         'Phase 2 — Grounded refinement (ONLY when the user agrees in Phase 1, or directly asks\n'
         'to ground/check/refine the recommendation):\n'
         '  Step 1. navigate_to_landmark(landmark_name="kitchen")\n'
-        '  Step 2. register_objects(targets="<comma-separated ingredients from the ideal meal>")\n'
-        '          — Use register_objects (NOT scan_objects). register_objects persists the detections\n'
-        '            so the next get_meal_recommendation call can see them.\n'
+        '  Step 2. check_food(place="kitchen") — it finds the foods in the kitchen.\n'
+        '          — Use check_food (NOT scan_objects or register_objects): only check_food gives the\n'
+        '            foods to the next get_meal_recommendation call.\n'
         '  Step 3. Call get_meal_recommendation AGAIN with the SAME eaten_foods, disliked_ingredients,\n'
         '          and health_condition you used in Phase 1.\n'
-        '  Step 4. Present the refined recommendation; mention which ingredients were present and which\n'
-        '          were missing from the kitchen.\n'
+        '  Step 4. Present the refined recommendation; it is built only from the foods found in the kitchen.\n'
         '  Do NOT loop Phase 2 — present the refined result and wait for the user.\n\n'
         'Always reply in the same language the user uses. '
         'When moving between living room and bedroom, you have to go hallway first.\n\n'
@@ -498,7 +550,7 @@ def main():
     from tools.object_tool import GetDetectedObjects, ForgetObject
     from tools.motion_tool import SpinRobot
     from tools.detect_tool import ScanObjects, RegisterObjects, NavigateAndScan
-    from tools.nutrition_tool import GetMealRecommendation
+    from tools.nutrition_tool import GetMealRecommendation, CheckFood
 
     llm = get_chat_model({
         'model': 'unsloth/Qwen3.5-9B-GGUF',
@@ -527,6 +579,7 @@ def main():
         'register_objects':             RegisterObjects(),
         'navigate_and_scan':            NavigateAndScan(),
         'get_meal_recommendation':      GetMealRecommendation(),
+        'check_food':                   CheckFood(),
     }
 
     print('Robot Navigation Assistant (type "exit" to quit)')

@@ -45,6 +45,14 @@ os.makedirs(_DATA_DIR, exist_ok=True)
 _INTEREST_OBJECTS = os.environ.get('INTEREST_OBJECTS', '')
 _DETECTOR_TYPE    = os.environ.get('DETECTOR_TYPE', 'yolo')
 
+
+def _label_matches(label: str, targets: set) -> bool:
+    """label is one of targets, or the words of one contain the other's: the detector said "chair"
+    for the target "blue chair" and exact matching dropped it. "orange chair" != "blue chair"."""
+    lw = set(label.lower().replace('_', ' ').split())
+    return any(lw <= tw or tw <= lw for tw in (set(t.lower().replace('_', ' ').split()) for t in targets))
+
+
 # Time to wait for frames on first init (seconds)
 _WARMUP_WAIT    = 2.0
 # How long to wait for a frame on each scan call (seconds)
@@ -164,7 +172,7 @@ class _Scanner:
         for d in dets:
             if not d.has_3d:
                 continue
-            if targets and d.label not in targets:
+            if targets and not _label_matches(d.label, targets):
                 continue
             qualified.append(d)
 
@@ -231,22 +239,19 @@ class _Scanner:
     # ------------------------------------------------------------------
     def _register_vlm(self, interest: set | None = None) -> dict:
         """Run VLM grounding on saved frames, get 3D positions, send to bridge."""
-        color_path = os.path.join(_DATA_DIR, 'color_current.png')
-        depth_path = os.path.join(_DATA_DIR, 'depth_current.npy')
-
-        if not os.path.exists(color_path) or not os.path.exists(depth_path):
-            # No saved frames — save them now
-            color_path, depth_path = self._save_current_frame()
-            if color_path is None:
-                return {'status': 'error',
-                        'message': 'No camera frame available. Is the RealSense camera running?'}
+        # Always a fresh frame: the last saved one can be from before a spin or a navigation
+        # (search: "spin 90° + register_objects" ×4 checked the same old picture four times)
+        color_path, depth_path = self._save_current_frame()
+        if color_path is None:
+            return {'status': 'error',
+                    'message': 'No camera frame available. Is the RealSense camera running?'}
 
         print(f'[register_objects] VLM grounding on saved frames...')
-        dets = self.detector.detect_from_files(color_path, depth_path)
+        dets = self.detector.detect_from_files(color_path, depth_path, targets=interest)
 
         # Apply interest filter
         if interest:
-            dets = [d for d in dets if d.label in interest]
+            dets = [d for d in dets if _label_matches(d.label, interest)]
 
         # Filter to detections with valid 3D
         qualified = [d for d in dets if d.has_3d]
@@ -346,7 +351,7 @@ class _Scanner:
         filtered_interest = []
         if interest:
             for label in list(stable.keys()):
-                if label not in interest:
+                if not _label_matches(label, interest):
                     filtered_interest.append(label)
                     del stable[label]
                     print(f'[register_objects] Filtered out (not in interest list): {label}')
@@ -574,7 +579,7 @@ class _Scanner:
         label_positions: dict[str, list[tuple[float, float]]] = defaultdict(list)
         for obj in self.temp_objects:
             label = obj['label']
-            if targets and label not in targets:
+            if targets and not _label_matches(label, targets):
                 continue
             label_positions[label].append((obj['map_x'], obj['map_y']))
 

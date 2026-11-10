@@ -63,6 +63,27 @@ _NONFOOD_BLOCKLIST = {
     "bird",
 }
 
+# Generic labels that name no particular food ("food" was mapped to oats). Plural s
+# is ignored when comparing, so "Drinks" and "pantry items" match too.
+_GENERIC_LABELS = {
+    "food", "item", "object", "thing", "drink", "beverage", "snack", "pantry item",
+    "grocery", "grocerie", "ingredient", "produce", "fruit", "vegetable", "dish", "meal",
+    "package", "box", "container", "bottle", "can", "jar", "bag", "carton", "packet",
+    "food item", "food package",
+}
+
+# Label → food: the best of this many text matches by shared words (see _label_to_fdc_id).
+_LABEL_TOP_K = 10
+_USDA_NOTE = re.compile(r"\(Includes foods for USDA's Food Distribution Program\)", re.I)
+
+
+def _words(s: str) -> set[str]:
+    """Lower-case words, plural s dropped ("potatoes" → "potatoe", "eggs" → "egg")."""
+    return {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in re.findall(r"[a-z]+", s.lower())}
+
+
+_GENERIC_KEYS = {" ".join(sorted(_words(g))) for g in _GENERIC_LABELS}
+
 # Frame-name pattern: "detected_<label>_<idx>" → label
 # Also accepts plain labels like "apple" without the detected_ prefix.
 _FRAME_RE = re.compile(r"^(?:detected_)?(.+?)(?:_\d+)?$", re.IGNORECASE)
@@ -130,11 +151,18 @@ def _query_zmq_objects(addr: str | None = None) -> set[str]:
 
 
 def _label_to_fdc_id(label: str, threshold: float = SIM_THRESHOLD) -> int | None:
-    """Resolve a label to its best matching fdc_id via text top-1.
+    """Resolve a label to a food fdc_id by text similarity and the label's words.
 
     Cached per process. Returns None if either:
-    - the label is in the non-food blocklist (chairs, persons, etc.), or
-    - the top-1 text cosine is below the threshold.
+    - the label is in the non-food blocklist (chairs, persons, etc.) or is a
+      generic label ("food", "drinks"), or
+    - the top-1 text cosine is below the threshold (not a food).
+
+    Among the _LABEL_TOP_K most similar foods (those with macro data), the one whose description has the
+    most of the label's words wins: text top-1 alone mapped "ice cream" to
+    "Blueberries, frozen" (0.610) over "Light Ice Cream" (0.590). Ties go to a food
+    with a label word before the first comma (USDA names the food itself first:
+    "Bread, potato" is bread), then fewer other words, then the more similar one.
     """
     if label in _label_cache:
         return _label_cache[label]
@@ -142,7 +170,7 @@ def _label_to_fdc_id(label: str, threshold: float = SIM_THRESHOLD) -> int | None
     block_env = os.environ.get("AVAILABILITY_BLOCKLIST", "")
     extra_blocklist = {x.strip().lower() for x in block_env.split(",") if x.strip()}
     blocked = _NONFOOD_BLOCKLIST | extra_blocklist
-    if label.lower().strip() in blocked:
+    if label.lower().strip() in blocked or " ".join(sorted(_words(label))) in _GENERIC_KEYS:
         _label_cache[label] = None
         return None
 
@@ -153,7 +181,7 @@ def _label_to_fdc_id(label: str, threshold: float = SIM_THRESHOLD) -> int | None
 
     embedder = _get_embedder()
     q_text = embedder.encode([label], task_instruction=FOOD_SEARCH_INSTRUCTION)[0]
-    df = hybrid_rank(q_text=q_text, q_gat=None, alpha=0.0, k=1)
+    df = hybrid_rank(q_text=q_text, q_gat=None, alpha=0.0, k=_LABEL_TOP_K)
 
     if df.empty:
         _label_cache[label] = None
@@ -162,9 +190,37 @@ def _label_to_fdc_id(label: str, threshold: float = SIM_THRESHOLD) -> int | None
     if top_score < threshold:
         _label_cache[label] = None
         return None
-    fid = int(df.iloc[0]["fdc_id"])
+
+    # Only foods with protein, fat and carb values: some USDA entries have none in the
+    # KB ("Milk, whole", "Eggs; whole") and would be ranked as 0 g of everything.
+    from nutri_rag.search import get_nutrients
+    macros = {"Protein", "Total lipid (fat)", "Carbohydrate, by difference"}
+    with_data = [i for i in range(len(df))
+                 if macros <= set(get_nutrients(None, int(df.iloc[i]["fdc_id"]), key_only=True))]
+    lw = _words(label)
+
+    def score(i):
+        d = _USDA_NOTE.sub("", df.iloc[i]["description"])
+        dw = _words(d)
+        return len(lw & dw), bool(lw & _words(d.split(",")[0])), -len(dw - lw), -i
+
+    row = df.iloc[max(with_data or range(len(df)), key=score)]
+    print(f"[availability] {label!r} -> {row['description'][:60]!r} (similarity {float(row['text_sim']):.3f})")
+    fid = int(row["fdc_id"])
     _label_cache[label] = fid
     return fid
+
+
+def fdc_ids_for_labels(labels) -> set[int]:
+    """fdc_ids of the labels that are foods (non-food and generic labels are dropped)."""
+    fdc_ids: set[int] = set()
+    for label in labels:
+        if not label.strip():
+            continue
+        fid = _label_to_fdc_id(label.strip().lower())
+        if fid is not None:
+            fdc_ids.add(fid)
+    return fdc_ids
 
 
 def get_available_fdc_ids(
@@ -197,9 +253,5 @@ def get_available_fdc_ids(
     else:
         raise ValueError(f"unknown availability source: {source!r}")
 
-    fdc_ids: set[int] = set()
-    for label in labels:
-        fid = _label_to_fdc_id(label)
-        if fid is not None:
-            fdc_ids.add(fid)
+    fdc_ids = fdc_ids_for_labels(labels)
     return fdc_ids if fdc_ids else None

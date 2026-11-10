@@ -16,6 +16,7 @@ def format_recommendation_prompt(
     next_meal: str = "lunch",
     preference_summary: dict | None = None,
     meal_candidates: list | None = None,
+    available_only: bool = False,
 ) -> list[dict[str, str]]:
     """Build chat messages for LLM Call 2 (recommendation generation).
 
@@ -24,6 +25,8 @@ def format_recommendation_prompt(
             the prompt includes a "Suggested Meals" section so the LLM can
             anchor its answer on a concrete recipe instead of composing one
             from foods on the fly.
+        available_only: the options are the foods the user has right now
+            (availability filter): the meal must use only those.
 
     Returns a list of message dicts ready for the chat completion API.
     """
@@ -133,6 +136,13 @@ def format_recommendation_prompt(
             "from that list (by your judgment, balancing fit and missing "
             "ingredients) and explain briefly. Do not invent recipes that "
             "are not in the suggested list when one fits well."
+        )
+    if available_only:
+        # without this the LLM adds foods the user does not have (quinoa, chickpeas, ...)
+        system_msg += (
+            " The Recommended Foods are what the user has available right now. Build the "
+            "meal ONLY from those foods (basic seasoning like salt, pepper and oil is fine); "
+            "do not add any other ingredient."
         )
 
     user_msg = (
