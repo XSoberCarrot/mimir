@@ -11,13 +11,19 @@ speech_bridge.py (--speak-port, default 5562) -> /tts -> tts_stream_node.py -> G
 
 Speech code taken from nutriatlas_voice/voice_assistant.py (speech_text, speak, streaming).
 
-Robot side: robot_voice/server_version/robot/ (speech nodes on port 5562), see its README.md.
+--mic: questions come from the robot microphone instead of the keyboard. The robot's mic.sh (PageUp
+push-to-talk -> Google STT) offers each recognized sentence on robot port --listen-port (default 5561), and
+this script connects to it at --robot-ip (the robot does not need this machine's address).
+
+Robot side: robot_voice/server_version/robot/ (speech nodes on port 5562, mic.sh), see its README.md.
 
 Usage (all other arguments are passed to robot_assistant.py):
     python speak_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm
+    python speak_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm --mic
     python speak_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detector vlm --no-voice
 """
 import argparse
+import builtins
 import os
 import re
 import sys
@@ -68,12 +74,26 @@ def main():
     ap.add_argument("--robot-ip", default=os.environ.get("ROBOT_IP", "127.0.0.1"))
     ap.add_argument("--speak-port", type=int, default=int(os.environ.get("SPEAK_PORT", 5562)))
     ap.add_argument("--no-voice", action="store_true", help="print replies only, like robot_assistant.py")
+    ap.add_argument("--mic", action="store_true",
+                    help="questions come from the robot microphone (robot: mic.sh) instead of the keyboard")
+    ap.add_argument("--listen-port", type=int, default=int(os.environ.get("LISTEN_PORT", 5561)))
     args, rest = ap.parse_known_args()
     sys.argv = [sys.argv[0], "--robot-ip", args.robot_ip] + rest
 
     os.chdir(RC)
     sys.path.insert(0, RC)
     import robot_assistant as ra
+
+    if args.mic:  # every input('User: ') in robot_assistant waits for a sentence from the robot instead
+        pull = zmq.Context.instance().socket(zmq.PULL)
+        pull.connect(f"tcp://{args.robot_ip}:{args.listen_port}")   # mic.sh listens on the robot
+
+        def mic_input(prompt=""):
+            print(f"{prompt}(waiting for the robot microphone, {args.robot_ip}:{args.listen_port})", flush=True)
+            text = pull.recv_string().strip()
+            print(f"[mic] {text}", flush=True)
+            return text
+        builtins.input = mic_input
 
     if args.no_voice:
         print("[speak] voice off (--no-voice): replies are only printed", flush=True)

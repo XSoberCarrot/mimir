@@ -11,7 +11,7 @@ robot : speech_bridge.py (:5562 -> /tts) -> tts_stream_node.py (ElevenLabs) -> G
 | Folder | Runs on | Files |
 |---|---|---|
 | `nutri-atlas/robot_control/` | operator PC | `speak_assistant.py`: wraps `robot_assistant.py` unchanged, same arguments (`--no-voice` = printed only) |
-| `robot/` | Go2 | `speech_bridge.py`, `tts_stream_node.py` (copy from `nutriatlas_voice`), `speech_nodes.sh`, `start_robot_side.sh` |
+| `robot/` | Go2 | `speech_bridge.py`, `tts_stream_node.py` (copy from `nutriatlas_voice`), `speech_nodes.sh`, `start_robot_side.sh`; microphone input: `mic_input.py`, `mic.sh` |
 
 The robot side uses Chang's `speech_processor` build (read-only, it has the ElevenLabs key) and
 does not change `~/Chang/nutriatlas_voice`. Port 5562 is used instead of 5560, so the start order
@@ -42,6 +42,7 @@ ros2 launch ./everything.launch.py
 # Terminal 2: speech nodes + ZMQ bridge. Ctrl+C stops both.
 cd ~/test_ws/atlas/robot_voice && ./start_robot_side.sh
 #   bridge options are passed on: ./start_robot_side.sh --spin-threshold-deg 15
+#   with the microphone (see below):  ./start_robot_side.sh --mic
 ```
 
 Server (2 terminals):
@@ -70,6 +71,36 @@ Options (environment variables on the server):
 
 On the robot, `PLAYBACK_PAD` (default 1.0 s) is the wait after each sentence; 0.2 s lost sentences.
 
+## Microphone input (optional)
+
+Ask by voice instead of typing: PageUp on the presenter remote starts recording on the robot, PageUp again
+stops; Google Speech-to-Text turns it into text, which is sent to the server as the question.
+
+```
+robot: mic.sh (PageUp + USB mic -> Google STT) -> robot :5561 <--ZMQ connect-- server: speak_assistant.py --mic
+```
+
+Needs on the robot: the Jieli mic receiver (`lsusb`: `4c4a:4155`) and the remote receiver (`1ea7:1066`)
+plugged in, internet, and the `go2-agent-demo` conda env and Google credentials of
+`~/Man/nutriatlas_voice` (read only, nothing there is changed). The robot must accept TCP 5561; the server
+connects to it with `--robot-ip`, so the robot does not need the server's address.
+
+```bash
+# server, Terminal 2: same as before plus --mic (waits for the robot instead of the keyboard)
+cd nutri-atlas/robot_control
+python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm --mic
+
+# robot, Terminal 2 with --mic: speech nodes + bridge + microphone in one terminal
+#   (asks for the sudo password first: the PageUp key hook needs root; mic lines start with [mic])
+cd ~/test_ws/atlas/robot_voice && ./start_robot_side.sh --mic
+#   or the microphone alone in its own terminal:  ./mic.sh
+#   test without PageUp:  ./mic.sh --seconds 4 --print-only    (records 4 s, prints the text, sends nothing)
+```
+
+Ready when it prints `Press PageUp to START recording...`. Each sentence shows as `You said: ...` on the
+robot and `[mic] ...` on the server. Wait until the robot finishes speaking before the next question.
+Quit the server with Ctrl+C (in `--mic` mode it does not read the keyboard).
+
 ## Test the voice alone
 
 ```bash
@@ -91,3 +122,7 @@ Logs on the robot: `~/test_ws/atlas/robot_voice/logs/speech_bridge.log` (text re
 | `tts_node.log`: generation error | No internet on the robot (ElevenLabs) |
 | `speech_nodes.sh start` refuses: another speech node | `~/Chang/nutriatlas_voice` nodes are running; stop them (`./services.sh stop speech` or `./tts_stream_nodes.sh stop` there). Two nodes = every sentence twice |
 | Two voices / doubled sentences | Same as above |
+| `mic.sh`: `WARNING: no USB microphone found` | Mic receiver not plugged in (`lsusb` must list `4c4a:4155`) |
+| `mic.sh`: PageUp does nothing | Remote receiver not plugged in (`1ea7:1066`), or `mic.sh` not run with sudo |
+| `You said: ''` | Nothing recognized: hold the mic closer, pause briefly after pressing PageUp |
+| `You said: ...` on the robot but no `[mic]` on the server | Server not started with `--mic`, or wrong `--robot-ip` (the robot prints `not sent: no server connected`) |

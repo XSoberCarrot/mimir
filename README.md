@@ -255,7 +255,7 @@ Needs: internet on the robot (ElevenLabs), and Chang's `speech_processor` build 
 - The operator PC and the robot must be on the same Wi-Fi subnet (`192.168.0.x`).
 - **Get the robot's IP on the robot** with `hostname -I`, and use the `192.168.0.x` address. Ignore `192.168.123.x` (Unitree internal) and `172.17.x.x` (Docker). The address can change after a reboot.
 - From the operator PC: `ping <ROBOT_IP>`.
-- The robot must accept TCP **5555** (bridge), **5557** and **5558** (camera), and **5562** (speech, only with spoken replies).
+- The robot must accept TCP **5555** (bridge), **5557** and **5558** (camera), and **5562** (speech, only with spoken replies). With `--mic`, also **5561** (microphone text).
 
 ### 4.2 On the robot (2 terminals)
 
@@ -275,6 +275,7 @@ python3 zmq_bridge_node_working_v2.py
 # Terminal 2, with spoken replies instead (§3.4): speech nodes + the same bridge; Ctrl+C stops both
 cd ~/test_ws/atlas/robot_voice && ./start_robot_side.sh
 #   bridge options are passed on: ./start_robot_side.sh --spin-threshold-deg 15
+#   with the robot microphone (for speak_assistant.py --mic): ./start_robot_side.sh --mic
 #   speech nodes alone: ./speech_nodes.sh start | stop | status   (logs in ~/test_ws/atlas/robot_voice/logs/)
 ```
 
@@ -296,7 +297,13 @@ python robot_assistant.py --robot-ip 192.168.0.164 --detection-mode real --detec
 # Terminal 2, with spoken replies instead (§3.4): same arguments, replies also spoken by the robot
 python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm
 python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm --no-voice   # printed only
+python speak_assistant.py --robot-ip <ROBOT_IP> --detection-mode real --detector vlm --mic        # ask by voice
+
+# Robot, only with --mic: start robot Terminal 2 with the microphone (PageUp push-to-talk, asks for sudo)
+cd ~/test_ws/atlas/robot_voice && ./start_robot_side.sh --mic     # or separately: ./mic.sh
 ```
+
+With `--mic`, questions come from the robot microphone instead of the keyboard: PageUp on the presenter remote starts and stops recording, Google Speech-to-Text turns it into text. Needs the mic receiver (`lsusb`: `4c4a:4155`) and remote receiver (`1ea7:1066`) plugged into the robot. Details in `robot_voice/server_version/README.md`.
 
 `speak_assistant.py` runs `robot_assistant.py` unchanged and sends each reply to the robot (printed as `[speak] ...`). `SPEAK_STREAM=first` (default) speaks the first sentence while the LLM is still writing; `each` speaks every sentence when it is finished; `off` speaks the whole answer at the end.
 
@@ -353,6 +360,7 @@ Simulation uses a different bridge and an extra object server, in an autonomy-st
 | `Trajectory Hits Obstacle` in the Nav2 log at the start of a trip | The start pose is too close to an obstacle. Move that landmark into open space. |
 | Robot shakes near the goal | Bridge and Nav2 position tolerances differ (see §3.2). |
 | `[speak]` lines printed but the robot is silent | Speech nodes not running (`./speech_nodes.sh status` on the robot) or wrong `--robot-ip`. Check `~/test_ws/atlas/robot_voice/logs/speech_bridge.log` (text received) and `tts_node.log` (generation, needs internet). |
+| `--mic`: robot prints `You said: ...` but the assistant shows no `[mic]` line | Assistant not started with `--mic`, or wrong `--robot-ip` (the robot then prints `not sent: no server connected`). |
 | No voice and no `[speak]` lines | You started `robot_assistant.py` or used `--no-voice`; start `speak_assistant.py`. |
 | Gait falls back to default | Check `ros2 param get /go2_base gait_api_id` and the `Gait set:` lines in the launch output. |
 | `undefined symbol` importing torch_scatter | PyG wheels don't match torch/CUDA (see §1.1). |
