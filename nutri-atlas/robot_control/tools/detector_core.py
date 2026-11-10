@@ -220,7 +220,7 @@ class VLMDetector:
         for det in dets:
             dcx = int(min(max(det.cx * sx, 0), dw - 1))
             dcy = int(min(max(det.cy * sy, 0), dh - 1))
-            det.depth_mm = sample_depth_arr(depth, dcx, dcy)
+            det.depth_mm = sample_depth_box(depth, det.x1 * sx, det.y1 * sy, det.x2 * sx, det.y2 * sy)
             if det.depth_mm > 0:
                 z = det.depth_mm / 1000.0
                 det.cam_x_m = (dcx - self.PPX) * z / self.FX
@@ -246,7 +246,8 @@ class VLMDetector:
         seen = set()
         for match in re.finditer(r'<ref>(.*?)</ref>\s*<box>(.*?)(?:</box>|$)', response, re.MULTILINE):
             label = match.group(1).strip()
-            for coords in re.findall(r'\((\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)', match.group(2)):
+            # (x1, y1, x2, y2) or [x1, y1, x2, y2]: the VLM also answers "<box>[[527, 302, 625, 708]]</box>"
+            for coords in re.findall(r'[(\[]\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\s*[)\]]', match.group(2)):
                 x1_n, y1_n, x2_n, y2_n = [int(v) for v in coords]
                 key = (label, x1_n, y1_n, x2_n, y2_n)
                 if key in seen:
@@ -297,15 +298,21 @@ class VLMDetector:
             return ''
 
 
-def sample_depth_arr(depth: np.ndarray, cx: int, cy: int) -> float:
-    """Median depth (mm) in a small patch around (cx, cy). Standalone version for numpy arrays."""
+def sample_depth_box(depth: np.ndarray, x1: float, y1: float, x2: float, y2: float) -> float:
+    """Depth (mm) of the object in a box: 20th percentile of the valid depths in its middle part.
+
+    The depth image is not aligned with the color image, so the box center can miss a thin object:
+    a standing person's center hit the wall behind (10.5 m instead of ~6.5 m). The object is nearer
+    than what is behind it, so a low percentile picks it; the middle (half the width, middle 60 % of
+    the height) leaves out the floor or table in front of it.
+    """
     h, w = depth.shape[:2]
-    n = DEPTH_PATCH_HALF
-    x1, x2 = max(0, cx - n), min(w, cx + n + 1)
-    y1, y2 = max(0, cy - n), min(h, cy + n + 1)
-    patch = depth[y1:y2, x1:x2].astype(np.float32)
+    bw, bh = x2 - x1, y2 - y1
+    xa, xb = int(max(0, x1 + bw * 0.25)), int(min(w, x2 - bw * 0.25)) + 1
+    ya, yb = int(max(0, y1 + bh * 0.2)), int(min(h, y2 - bh * 0.2)) + 1
+    patch = depth[ya:yb, xa:xb]
     valid = patch[patch > 0]
-    return float(np.median(valid)) if valid.size > 0 else 0.0
+    return float(np.percentile(valid, 20)) if valid.size > 0 else 0.0
 
 
 # ---------------------------------------------------------------------------
